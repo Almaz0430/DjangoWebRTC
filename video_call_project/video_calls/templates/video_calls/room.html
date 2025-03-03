@@ -1,0 +1,187 @@
+{% extends 'video_calls/base.html' %}
+
+{% block title %}{{ room.name }}{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2>{{ room.name }}</h2>
+            <div>
+                <button id="toggleVideo" class="btn btn-primary me-2">Выкл. видео</button>
+                <button id="toggleAudio" class="btn btn-primary me-2">Выкл. звук</button>
+                <a href="{% url 'video_calls:leave_room' room.id %}" class="btn btn-danger">Покинуть комнату</a>
+            </div>
+        </div>
+
+        <div class="video-container">
+            <video id="remoteVideo" class="video-item" autoplay playsinline></video>
+            <video id="localVideo" autoplay playsinline muted></video>
+        </div>
+
+        <div class="mt-4">
+            <h4>Участники:</h4>
+            <ul id="participantsList" class="list-group">
+                {% for member in room_members %}
+                <li class="list-group-item">
+                    {{ member.user.username }}
+                    {% if member.user == room.host %}
+                    <span class="badge bg-primary">Организатор</span>
+                    {% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    const roomId = '{{ room.id }}';
+    let localStream;
+    let peerConnection;
+    let websocket;
+
+    const configuration = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' }
+        ]
+    };
+
+    async function init() {
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({
+                audio: true,
+                video: true
+            });
+            document.getElementById('localVideo').srcObject = localStream;
+
+            connectToWebSocket();
+        } catch (e) {
+            console.error('Error accessing media devices:', e);
+        }
+    }
+
+    function connectToWebSocket() {
+        websocket = new WebSocket(
+            `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/video/${roomId}/`
+        );
+
+        websocket.onopen = () => {
+            console.log('WebSocket connected');
+        };
+
+        websocket.onmessage = async (event) => {
+            const data = JSON.parse(event.data);
+            
+            switch (data.type) {
+                case 'offer':
+                    await handleOffer(data.offer);
+                    break;
+                case 'answer':
+                    await handleAnswer(data.answer);
+                    break;
+                case 'ice':
+                    if (data.ice) {
+                        await handleIceCandidate(data.ice);
+                    }
+                    break;
+            }
+        };
+
+        websocket.onclose = () => {
+            console.log('WebSocket disconnected');
+        };
+    }
+
+    async function createPeerConnection() {
+        peerConnection = new RTCPeerConnection(configuration);
+
+        localStream.getTracks().forEach(track => {
+            peerConnection.addTrack(track, localStream);
+        });
+
+        peerConnection.ontrack = event => {
+            document.getElementById('remoteVideo').srcObject = event.streams[0];
+        };
+
+        peerConnection.onicecandidate = event => {
+            if (event.candidate) {
+                websocket.send(JSON.stringify({
+                    type: 'ice',
+                    ice: event.candidate
+                }));
+            }
+        };
+    }
+
+    async function handleOffer(offer) {
+        if (!peerConnection) {
+            await createPeerConnection();
+        }
+
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+
+        websocket.send(JSON.stringify({
+            type: 'answer',
+            answer: answer
+        }));
+    }
+
+    async function handleAnswer(answer) {
+        if (peerConnection) {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        }
+    }
+
+    async function handleIceCandidate(ice) {
+        if (peerConnection) {
+            try {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(ice));
+            } catch (e) {
+                console.error('Error adding ice candidate:', e);
+            }
+        }
+    }
+
+    async function startCall() {
+        if (!peerConnection) {
+            await createPeerConnection();
+        }
+
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+
+        websocket.send(JSON.stringify({
+            type: 'offer',
+            offer: offer
+        }));
+    }
+
+    document.getElementById('toggleVideo').addEventListener('click', () => {
+        const videoTrack = localStream.getVideoTracks()[0];
+        if (videoTrack) {
+            videoTrack.enabled = !videoTrack.enabled;
+            document.getElementById('toggleVideo').textContent = 
+                videoTrack.enabled ? 'Выкл. видео' : 'Вкл. видео';
+        }
+    });
+
+    document.getElementById('toggleAudio').addEventListener('click', () => {
+        const audioTrack = localStream.getAudioTracks()[0];
+        if (audioTrack) {
+            audioTrack.enabled = !audioTrack.enabled;
+            document.getElementById('toggleAudio').textContent = 
+                audioTrack.enabled ? 'Выкл. звук' : 'Вкл. звук';
+        }
+    });
+
+    init();
+    {% if is_host %}
+    setTimeout(startCall, 1000);
+    {% endif %}
+</script>
+{% endblock %} 

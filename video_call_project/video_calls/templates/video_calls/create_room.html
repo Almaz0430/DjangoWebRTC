@@ -1,0 +1,26 @@
+{% extends 'video_calls/base.html' %}
+
+{% block title %}Создать комнату{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-6 offset-md-3">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="mb-0">Создать новую комнату</h3>
+            </div>
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+                    <div class="mb-3">
+                        <label for="room_name" class="form-label">Название комнаты</label>
+                        <input type="text" class="form-control" id="room_name" name="room_name" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Создать</button>
+                    <a href="{% url 'video_calls:room_list' %}" class="btn btn-secondary">Отмена</a>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %} 
