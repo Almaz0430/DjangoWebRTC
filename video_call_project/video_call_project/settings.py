@@ -25,7 +25,16 @@ SECRET_KEY = 'django-insecure-1(_x3bos)@ioj2n7=ryi3n!(s1sixfee6urgg%#1w!70=#(1m&
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['*']  # В продакшене замените на конкретные IP-адреса
+ALLOWED_HOSTS = ['*', '6755-178-89-15-76.ngrok-free.app']
+
+CSRF_TRUSTED_ORIGINS = [
+    'https://6755-178-89-15-76.ngrok-free.app'
+]
+
+# Настройки для WebSocket через HTTPS
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
+SECURE_SSL_REDIRECT = False
 
 
 # Application definition
@@ -39,6 +48,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'video_calls',
     'channels',
+    'sslserver',
 ]
 
 MIDDLEWARE = [

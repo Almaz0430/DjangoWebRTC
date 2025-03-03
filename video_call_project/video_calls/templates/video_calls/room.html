@@ -14,9 +14,11 @@
             </div>
         </div>
 
-        <div class="video-container">
-            <video id="remoteVideo" class="video-item" autoplay playsinline></video>
-            <video id="localVideo" autoplay playsinline muted></video>
+        <div id="videos-container" class="d-flex flex-wrap gap-3">
+            <div class="video-container" style="width: 300px;">
+                <video id="localVideo" autoplay playsinline muted class="w-100"></video>
+                <div class="text-center mt-2">Вы</div>
+            </div>
         </div>
 
         <div class="mt-4">
@@ -40,12 +42,16 @@
 <script>
     const roomId = '{{ room.id }}';
     let localStream;
-    let peerConnection;
+    let peerConnections = {};
     let websocket;
 
     const configuration = {
         iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' }
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' }
         ]
     };
 
@@ -56,109 +62,171 @@
                 video: true
             });
             document.getElementById('localVideo').srcObject = localStream;
-
             connectToWebSocket();
         } catch (e) {
             console.error('Error accessing media devices:', e);
+            alert('Ошибка доступа к камере или микрофону: ' + e.message);
         }
     }
 
     function connectToWebSocket() {
-        websocket = new WebSocket(
-            `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/video/${roomId}/`
-        );
+        // Определяем протокол с учетом ngrok
+        const isSecure = window.location.protocol === 'https:' || 
+                        window.location.hostname.includes('ngrok-free.app');
+        const wsProtocol = isSecure ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws/video/${roomId}/`;
+        
+        websocket = new WebSocket(wsUrl);
 
         websocket.onopen = () => {
-            console.log('WebSocket connected');
+            console.log('WebSocket подключен');
+            // Отправляем сообщение о присоединении
+            websocket.send(JSON.stringify({
+                type: 'join',
+                room: roomId
+            }));
         };
 
         websocket.onmessage = async (event) => {
             const data = JSON.parse(event.data);
             
             switch (data.type) {
+                case 'join':
+                    // Новый пользователь присоединился, отправляем ему предложение
+                    if (data.user !== '{{ request.user.username }}') {
+                        createPeerConnection(data.user);
+                        const offer = await peerConnections[data.user].createOffer();
+                        await peerConnections[data.user].setLocalDescription(offer);
+                        websocket.send(JSON.stringify({
+                            type: 'offer',
+                            offer: offer,
+                            target: data.user
+                        }));
+                    }
+                    break;
                 case 'offer':
-                    await handleOffer(data.offer);
+                    await handleOffer(data);
                     break;
                 case 'answer':
-                    await handleAnswer(data.answer);
+                    await handleAnswer(data);
                     break;
                 case 'ice':
-                    if (data.ice) {
-                        await handleIceCandidate(data.ice);
-                    }
+                    await handleIceCandidate(data);
+                    break;
+                case 'leave':
+                    handleUserLeave(data.user);
                     break;
             }
         };
 
         websocket.onclose = () => {
-            console.log('WebSocket disconnected');
+            console.log('WebSocket отключен');
+        };
+
+        websocket.onerror = (error) => {
+            console.error('WebSocket ошибка:', error);
         };
     }
 
-    async function createPeerConnection() {
-        peerConnection = new RTCPeerConnection(configuration);
+    function createPeerConnection(username) {
+        if (peerConnections[username]) {
+            console.log('Соединение уже существует для', username);
+            return;
+        }
 
+        const pc = new RTCPeerConnection(configuration);
+        peerConnections[username] = pc;
+
+        // Добавляем локальные треки
         localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
+            pc.addTrack(track, localStream);
         });
 
-        peerConnection.ontrack = event => {
-            document.getElementById('remoteVideo').srcObject = event.streams[0];
-        };
-
-        peerConnection.onicecandidate = event => {
+        // Обработка ICE кандидатов
+        pc.onicecandidate = (event) => {
             if (event.candidate) {
                 websocket.send(JSON.stringify({
                     type: 'ice',
-                    ice: event.candidate
+                    ice: event.candidate,
+                    target: username
                 }));
             }
         };
+
+        // Обработка удаленного потока
+        pc.ontrack = (event) => {
+            const remoteVideo = document.getElementById(`video-${username}`);
+            if (!remoteVideo) {
+                const videoContainer = document.createElement('div');
+                videoContainer.className = 'video-container';
+                videoContainer.style.width = '300px';
+                videoContainer.id = `container-${username}`;
+                
+                const video = document.createElement('video');
+                video.id = `video-${username}`;
+                video.autoplay = true;
+                video.playsinline = true;
+                video.className = 'w-100';
+                
+                const label = document.createElement('div');
+                label.className = 'text-center mt-2';
+                label.textContent = username;
+                
+                videoContainer.appendChild(video);
+                videoContainer.appendChild(label);
+                document.getElementById('videos-container').appendChild(videoContainer);
+            }
+            
+            const video = document.getElementById(`video-${username}`);
+            if (video.srcObject !== event.streams[0]) {
+                video.srcObject = event.streams[0];
+            }
+        };
+
+        return pc;
     }
 
-    async function handleOffer(offer) {
-        if (!peerConnection) {
-            await createPeerConnection();
-        }
-
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-        const answer = await peerConnection.createAnswer();
-        await peerConnection.setLocalDescription(answer);
+    async function handleOffer(data) {
+        const pc = createPeerConnection(data.sender);
+        await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
 
         websocket.send(JSON.stringify({
             type: 'answer',
-            answer: answer
+            answer: answer,
+            target: data.sender
         }));
     }
 
-    async function handleAnswer(answer) {
-        if (peerConnection) {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+    async function handleAnswer(data) {
+        const pc = peerConnections[data.sender];
+        if (pc) {
+            await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
         }
     }
 
-    async function handleIceCandidate(ice) {
-        if (peerConnection) {
+    async function handleIceCandidate(data) {
+        const pc = peerConnections[data.sender];
+        if (pc) {
             try {
-                await peerConnection.addIceCandidate(new RTCIceCandidate(ice));
+                await pc.addIceCandidate(new RTCIceCandidate(data.ice));
             } catch (e) {
-                console.error('Error adding ice candidate:', e);
+                console.error('Ошибка добавления ICE кандидата:', e);
             }
         }
     }
 
-    async function startCall() {
-        if (!peerConnection) {
-            await createPeerConnection();
+    function handleUserLeave(username) {
+        const videoContainer = document.getElementById(`container-${username}`);
+        if (videoContainer) {
+            videoContainer.remove();
         }
-
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-
-        websocket.send(JSON.stringify({
-            type: 'offer',
-            offer: offer
-        }));
+        
+        if (peerConnections[username]) {
+            peerConnections[username].close();
+            delete peerConnections[username];
+        }
     }
 
     document.getElementById('toggleVideo').addEventListener('click', () => {
@@ -179,9 +247,7 @@
         }
     });
 
+    // Запускаем инициализацию при загрузке страницы
     init();
-    {% if is_host %}
-    setTimeout(startCall, 1000);
-    {% endif %}
 </script>
 {% endblock %} 
